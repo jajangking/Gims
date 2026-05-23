@@ -101,7 +101,17 @@ export default function Home() {
           <h1 className="text-xl font-bold text-white tracking-tight">
             GIMS <span className="text-blue-500">SYSTEM</span>
           </h1>
-          <span className="text-[10px] font-mono text-gray-500 uppercase">X-992-ALPHA</span>
+          <button 
+            onClick={() => {
+              setSystemMode(prev => prev === 'manual' ? 'ai' : 'manual');
+              setMotorL(0); setMotorR(0);
+            }}
+            className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest border transition-all ${
+              systemMode === 'ai' ? 'bg-blue-600/20 border-blue-500/50 text-blue-400' : 'bg-amber-600/20 border-amber-500/50 text-amber-400'
+            }`}
+          >
+            MODE: {systemMode.toUpperCase()}
+          </button>
         </header>
 
         <div className="flex flex-col gap-2">

@@ -28,59 +28,16 @@ export default function AiNeuralCli({ onCommand, onHardwareControl, activeDetect
   ]);
   const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const lastProactiveDetectionRef = useRef<string[]>([]);
-  const proactiveCooldownRef = useRef<number>(0);
-
-  // Proactive Detection Watcher
-  useEffect(() => {
-    if (!apiKey || isAiLoading || Date.now() < proactiveCooldownRef.current) return;
-
-    const currentLabels = activeDetections.map(d => d.label);
-    const newObjects = currentLabels.filter(label => !lastProactiveDetectionRef.current.includes(label));
-
-    if (newObjects.length > 0) {
-      const triggerLabel = newObjects[0];
-      proactiveCooldownRef.current = Date.now() + 15000;
-      lastProactiveDetectionRef.current = currentLabels;
-      handleGroqAi(`Saya baru saja mendeteksi ${triggerLabel}. Berikan laporan status singkat dalam Bahasa Indonesia.`);
-    } else {
-      lastProactiveDetectionRef.current = currentLabels;
-    }
-  }, [activeDetections, apiKey, isAiLoading]);
-
-  const COCO_CLASSES = "person, bicycle, car, motorcycle, airplane, bus, train, truck, boat, traffic light, fire hydrant, stop sign, parking meter, bench, bird, cat, dog, horse, sheep, cow, elephant, bear, zebra, giraffe, backpack, umbrella, handbag, tie, suitcase, frisbee, skis, snowboard, sports ball, kite, baseball bat, baseball glove, skateboard, surfboard, tennis racket, bottle, wine glass, cup, fork, knife, spoon, bowl, banana, apple, sandwich, orange, broccoli, carrot, hot dog, pizza, donut, cake, chair, couch, potted plant, bed, dining table, toilet, tv, laptop, mouse, remote, keyboard, cell phone, microwave, oven, toaster, sink, refrigerator, book, clock, vase, scissors, teddy bear, hair drier, toothbrush";
-
-  useEffect(() => {
-    const savedKey = localStorage.getItem('GROQ_API_KEY');
-    if (savedKey) setApiKey(savedKey);
-    else setShowKeyInput(true);
-  }, []);
-
-  useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [logs]);
-
-  const saveKey = (key: string) => {
-    if (!key.trim()) return;
-    localStorage.setItem('GROQ_API_KEY', key.trim());
-    setApiKey(key.trim());
-    setShowKeyInput(false);
-    setLogs(prev => [...prev, { type: 'sys', content: 'GROQ_API_KEY_SECURED. NEURAL_PROCESSOR_ONLINE.' }]);
-  };
 
   const handleGroqAi = async (userMsg: string) => {
     if (!apiKey) return;
     setIsAiLoading(true);
 
-    const systemPrompt = `Anda adalah GIMS Neural Interface, sistem kendali kamera dan robot otonom.
-BAHASA: Gunakan Bahasa Indonesia eksklusif.
-STATUS_ROBOT: Kecepatan ${telemetry.velocity} m/h, Arah ${telemetry.heading} derajat, Buzzer ${telemetry.buzzer ? 'Aktif' : 'Nonaktif'}.
-TARGET_TERKUNCI: ${commandTarget ? commandTarget : 'Tidak ada'}.
-SITUASI_SAAT_INI: ${activeDetections.length > 0 ? activeDetections.join(', ') : 'Tidak ada objek jelas'}.
-OBJEK_YANG_MUNGKIN: ${COCO_CLASSES}.
-INSTRUKSI_BERPIKIR: Sebelum menjalankan tool, sampaikan pemikiran Anda (1 kalimat) dalam Bahasa Indonesia.
-INSTRUKSI_OTONOMI: Anda memiliki izin penuh untuk mengoperasikan robot. Jika target hilang, gunakan 'turn_left' atau 'turn_right' untuk mencari. Jika target terlalu dekat, gunakan 'manual_stop'. Gunakan 'follow_object' untuk pelacakan. Jika sudah ada TARGET_TERKUNCI, JANGAN mengganti target tanpa perintah user. Jika user bertanya status, gunakan data STATUS_ROBOT dan SITUASI_SAAT_INI.`;
-
+    const systemPrompt = `Anda adalah GIMS, rekan kerja AI untuk sistem robot pengawas.
+  GAYA_KOMUNIKASI: Santai, natural, seperti manusia yang mengobrol, namun tetap teknis jika ditanya soal sistem.
+  STATUS_SAAT_INI: Kecepatan ${telemetry.velocity} m/h, Arah ${telemetry.heading} derajat, Buzzer ${telemetry.buzzer ? 'Aktif' : 'Nonaktif'}, Target terkunci: ${commandTarget || 'tidak ada'}.
+  SITUASI_KAMERA: ${activeDetections.length > 0 ? activeDetections.join(', ') : 'Tidak ada objek jelas'}.
+  INSTRUKSI: Gunakan tool HANYA jika diminta aksi sistem (lock/follow/reset/move/turn). Jika user menyapa atau bertanya, balas dengan natural. Jangan daftar semua objek, cukup fokus pada apa yang relevan. Hemat penggunaan kata.`;
 
     const currentMessages = [
       { role: "system", content: systemPrompt },
@@ -96,9 +53,10 @@ INSTRUKSI_OTONOMI: Anda memiliki izin penuh untuk mengoperasikan robot. Jika tar
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
+          model: "llama-3.1-8b-instant",
           messages: currentMessages,
           tools: [
+
             {
               type: "function",
               function: {
