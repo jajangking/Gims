@@ -3,15 +3,92 @@
 import React, { useState } from "react";
 import CameraModule from "@/components/CameraModule";
 import AiNeuralCli from "@/components/AiNeuralCli";
+import Esp32Simulator from "@/components/Esp32Simulator";
+import RadarMap from "@/components/RadarMap";
 
 export default function Home() {
   const [commandTarget, setCommandTarget] = useState<string | null>(null);
   const [commandMode, setCommandMode] = useState<'idle' | 'lock' | 'follow'>('idle');
-  const [currentDetections, setCurrentDetections] = useState<string[]>([]);
+  const [currentDetections, setCurrentDetections] = useState<any[]>([]);
+
+  // ESP32 Simulator States
+  const [motorL, setMotorL] = useState(0);
+  const [motorR, setMotorR] = useState(0);
+  const [buzzer, setBuzzer] = useState(false);
+  const lastKnownX = React.useRef<number>(50);
+
+  const telemetry = {
+    velocity: Math.round(((motorL + motorR) / 2) * 0.5),
+    heading: Math.round((motorR - motorL) * 0.9),
+    buzzer
+  };
+
+  // Autonomous Follow Logic
+  React.useEffect(() => {
+    if ((commandMode === 'follow' || commandMode === 'lock') && commandTarget) {
+      const targetObjs = currentDetections.filter(d => 
+        d.label.toLowerCase().includes(commandTarget.toLowerCase())
+      );
+      const targetObj = targetObjs.sort((a, b) => b.confidence - a.confidence)[0];
+
+      if (targetObj) {
+        const centerX = targetObj.box[0] + targetObj.box[2] / 2;
+        lastKnownX.current = centerX; // Remember position
+        
+        // Obstacle Avoidance: Stop if object is too close (width > 40%)
+        const isTooClose = targetObj.box[2] > 40;
+        if (isTooClose) {
+          setMotorL(0); setMotorR(0);
+        } else if (commandMode === 'follow') {
+          const error = centerX - 50; 
+          const turn = error * 0.8;
+          const speed = 40;
+          setMotorL(speed - turn);
+          setMotorR(speed + turn);
+        } else {
+          setMotorL(0); setMotorR(0);
+        }
+      } else {
+        // Intelligent Search: Turn towards last known position
+        const searchDirection = lastKnownX.current < 50 ? -25 : 25;
+        setMotorL(searchDirection);
+        setMotorR(-searchDirection);
+      }
+    } else if (commandMode === 'idle') {
+      setMotorL(0); setMotorR(0);
+    }
+  }, [currentDetections, commandMode, commandTarget]);
+
 
   const handleAiCommand = (target: string | null, mode: 'idle' | 'lock' | 'follow') => {
     setCommandTarget(target);
     setCommandMode(mode);
+    
+    // Default hardware response
+    setBuzzer(true);
+    setTimeout(() => setBuzzer(false), 500);
+
+    if (mode === 'follow') {
+      setMotorL(50); setMotorR(50);
+    } else if (mode === 'lock') {
+      setMotorL(0); setMotorR(0);
+    } else {
+      setMotorL(0); setMotorR(0);
+    }
+  };
+
+  // Dedicated hardware control for tools (called by AI)
+  const handleHardwareControl = (action: string) => {
+    setBuzzer(true);
+    setTimeout(() => setBuzzer(false), 500);
+    
+    switch(action) {
+      case 'left': setMotorL(-30); setMotorR(30); break;
+      case 'right': setMotorL(30); setMotorR(-30); break;
+      case 'forward': setMotorL(60); setMotorR(60); break;
+      case 'stop': setMotorL(0); setMotorR(0); break;
+      case 'buzzer': break; // already triggered
+    }
   };
 
   return (
@@ -31,12 +108,25 @@ export default function Home() {
           <CameraModule 
             externalTarget={commandTarget} 
             externalMode={commandMode} 
-            onDetectionUpdate={(dets) => setCurrentDetections(dets.map(d => `${d.label} (${(d.confidence*100).toFixed(0)}%)`))}
+            onDetectionUpdate={(dets) => setCurrentDetections(dets)}
           />
           
           <AiNeuralCli 
             onCommand={handleAiCommand} 
+            onHardwareControl={handleHardwareControl}
             activeDetections={currentDetections}
+            telemetry={telemetry}
+            commandTarget={commandTarget}
+          />
+
+          <RadarMap detections={currentDetections} heading={telemetry.heading} />
+
+          <Esp32Simulator 
+            motorL={motorL} 
+            motorR={motorR} 
+            buzzer={buzzer} 
+            onMotorChange={(l, r) => { setMotorL(l); setMotorR(r); }}
+            onBuzzerChange={(b) => setBuzzer(b)}
           />
         </div>
         

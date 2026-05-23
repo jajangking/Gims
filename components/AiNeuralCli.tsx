@@ -2,12 +2,22 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 
-interface AiNeuralCliProps {
-  onCommand: (target: string | null, mode: 'idle' | 'lock' | 'follow') => void;
-  activeDetections?: string[];
+interface Detection {
+  label: string;
+  confidence: number;
+  box: [number, number, number, number];
+  life?: number;
 }
 
-export default function AiNeuralCli({ onCommand, activeDetections = [] }: AiNeuralCliProps) {
+interface AiNeuralCliProps {
+  onCommand: (target: string | null, mode: 'idle' | 'lock' | 'follow' | 'interact') => void;
+  onHardwareControl: (action: string) => void;
+  activeDetections?: Detection[];
+  telemetry: { velocity: number, heading: number, buzzer: boolean };
+  commandTarget: string | null;
+}
+
+export default function AiNeuralCli({ onCommand, onHardwareControl, activeDetections = [], telemetry, commandTarget }: AiNeuralCliProps) {
   const [input, setInput] = useState('');
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [showKeyInput, setShowKeyInput] = useState(false);
@@ -25,7 +35,7 @@ export default function AiNeuralCli({ onCommand, activeDetections = [] }: AiNeur
   useEffect(() => {
     if (!apiKey || isAiLoading || Date.now() < proactiveCooldownRef.current) return;
 
-    const currentLabels = activeDetections.map(d => d.split(' ')[0]);
+    const currentLabels = activeDetections.map(d => d.label);
     const newObjects = currentLabels.filter(label => !lastProactiveDetectionRef.current.includes(label));
 
     if (newObjects.length > 0) {
@@ -62,11 +72,15 @@ export default function AiNeuralCli({ onCommand, activeDetections = [] }: AiNeur
     if (!apiKey) return;
     setIsAiLoading(true);
 
-    const systemPrompt = `Anda adalah GIMS Neural Interface, sistem kendali kamera berbasis AI.
-BAHASA: Gunakan Bahasa Indonesia secara eksklusif. Tetap teknis namun responsif.
+    const systemPrompt = `Anda adalah GIMS Neural Interface, sistem kendali kamera dan robot otonom.
+BAHASA: Gunakan Bahasa Indonesia eksklusif.
+STATUS_ROBOT: Kecepatan ${telemetry.velocity} m/h, Arah ${telemetry.heading} derajat, Buzzer ${telemetry.buzzer ? 'Aktif' : 'Nonaktif'}.
+TARGET_TERKUNCI: ${commandTarget ? commandTarget : 'Tidak ada'}.
 SITUASI_SAAT_INI: ${activeDetections.length > 0 ? activeDetections.join(', ') : 'Tidak ada objek jelas'}.
 OBJEK_YANG_MUNGKIN: ${COCO_CLASSES}.
-INSTRUKSI: Anda memiliki ingatan sesi (konteks). Gunakan tools HANYA untuk aksi sistem (lock/follow/reset). Jika user bertanya tentang apa yang Anda lihat, gunakan data SITUASI_SAAT_INI. Jika user menyapa, balas dengan Bahasa Indonesia yang santai tapi profesional.`;
+INSTRUKSI_BERPIKIR: Sebelum menjalankan tool, sampaikan pemikiran Anda (1 kalimat) dalam Bahasa Indonesia.
+INSTRUKSI_OTONOMI: Anda memiliki izin penuh untuk mengoperasikan robot. Jika target hilang, gunakan 'turn_left' atau 'turn_right' untuk mencari. Jika target terlalu dekat, gunakan 'manual_stop'. Gunakan 'follow_object' untuk pelacakan. Jika sudah ada TARGET_TERKUNCI, JANGAN mengganti target tanpa perintah user. Jika user bertanya status, gunakan data STATUS_ROBOT dan SITUASI_SAAT_INI.`;
+
 
     const currentMessages = [
       { role: "system", content: systemPrompt },
@@ -116,6 +130,60 @@ INSTRUKSI: Anda memiliki ingatan sesi (konteks). Gunakan tools HANYA untuk aksi 
             {
               type: "function",
               function: {
+                name: "turn_left",
+                description: "Rotate the robot to the left.",
+                parameters: { type: "object", properties: {} }
+              }
+            },
+            {
+              type: "function",
+              function: {
+                name: "turn_right",
+                description: "Rotate the robot to the right.",
+                parameters: { type: "object", properties: {} }
+              }
+            },
+            {
+              type: "function",
+              function: {
+                name: "activate_buzzer",
+                description: "Trigger the robot's buzzer sound.",
+                parameters: { type: "object", properties: {} }
+              }
+            },
+            {
+              type: "function",
+              function: {
+                name: "manual_move",
+                description: "Manually move the robot forward.",
+                parameters: { type: "object", properties: {} }
+              }
+            },
+            {
+              type: "function",
+              function: {
+                name: "manual_stop",
+                description: "Manually stop the robot movement.",
+                parameters: { type: "object", properties: {} }
+              }
+            },
+            {
+              type: "function",
+              function: {
+                name: "interact_object",
+                description: "Interact with a detected object.",
+                parameters: {
+                  type: "object",
+                  properties: {
+                    label: { type: "string", description: "The object to interact with" }
+                  },
+                  required: ["label"]
+                }
+              }
+            },
+            {
+              type: "function",
+              function: {
                 name: "reset_scan",
                 description: "Clear all targets and return to scan mode.",
                 parameters: { type: "object", properties: {} }
@@ -147,11 +215,36 @@ INSTRUKSI: Anda memiliki ingatan sesi (konteks). Gunakan tools HANYA untuk aksi 
             onCommand(args.label, 'follow');
             setLogs(prev => [...prev, { type: 'sys', content: `PELACAKAN_AKTIF: ${args.label.toUpperCase()}.` }]);
             finalAiResponse += ` [Aksi: Melacak ${args.label}]`;
+          } else if (fnName === 'interact_object') {
+            onCommand(args.label, 'interact');
+            setLogs(prev => [...prev, { type: 'sys', content: `MODE_INTERAKSI: ${args.label.toUpperCase()}.` }]);
+            finalAiResponse += ` [Aksi: Interaksi ${args.label}]`;
+          } else if (fnName === 'turn_left') {
+            onHardwareControl('left');
+            setLogs(prev => [...prev, { type: 'sys', content: `MANOEUVRE: BELOK_KIRI.` }]);
+            finalAiResponse += ` [Aksi: Belok Kiri]`;
+          } else if (fnName === 'turn_right') {
+            onHardwareControl('right');
+            setLogs(prev => [...prev, { type: 'sys', content: `MANOEUVRE: BELOK_KANAN.` }]);
+            finalAiResponse += ` [Aksi: Belok Kanan]`;
+          } else if (fnName === 'activate_buzzer') {
+            onHardwareControl('buzzer');
+            setLogs(prev => [...prev, { type: 'sys', content: `BUZZER_TRIGGERED.` }]);
+            finalAiResponse += ` [Aksi: Buzzer On]`;
+          } else if (fnName === 'manual_move') {
+            onHardwareControl('forward');
+            setLogs(prev => [...prev, { type: 'sys', content: `MANUAL_MOVE: MAJU.` }]);
+            finalAiResponse += ` [Aksi: Maju]`;
+          } else if (fnName === 'manual_stop') {
+            onHardwareControl('stop');
+            setLogs(prev => [...prev, { type: 'sys', content: `MANUAL_STOP: BERHENTI.` }]);
+            finalAiResponse += ` [Aksi: Berhenti]`;
           } else if (fnName === 'reset_scan') {
             onCommand(null, 'idle');
             setLogs(prev => [...prev, { type: 'sys', content: `PROTOKOL_DIHAPUS. RESET.` }]);
-            finalAiResponse += ` [Aksi: Reset]`;
+            finalAiResponse += ` [Aksi: Reset Sistem]`;
           }
+
         }
       } 
       
