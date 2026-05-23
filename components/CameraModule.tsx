@@ -8,9 +8,16 @@ interface Detection {
   label: string;
   confidence: number;
   box: [number, number, number, number];
+  life?: number; // Persistence life (frames/ms remaining)
 }
 
-export default function CameraModule() {
+interface CameraModuleProps {
+  externalTarget?: string | null;
+  externalMode?: 'idle' | 'lock' | 'follow';
+  onDetectionUpdate?: (detections: Detection[]) => void;
+}
+
+export default function CameraModule({ externalTarget, externalMode, onDetectionUpdate }: CameraModuleProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -20,8 +27,19 @@ export default function CameraModule() {
   const [isAiActive, setIsAiActive] = useState(false);
   const [isModelLoading, setIsModelLoading] = useState(false);
   const [detections, setDetections] = useState<Detection[]>([]);
+  const smoothedDetectionsRef = useRef<Detection[]>([]); // For anti-jitter
   const [trails, setTrails] = useState<Record<string, [number, number][]>>({}); // Track history per label
   const [threshold, setThreshold] = useState(0.45); // Sensitivity slider
+
+  // Local copies of props for rendering logic
+  const [targetLabel, setTargetLabel] = useState<string | null>(null);
+  const [trackingMode, setTrackingMode] = useState<'idle' | 'lock' | 'follow'>('idle');
+
+  useEffect(() => {
+    if (externalTarget !== undefined) setTargetLabel(externalTarget);
+    if (externalMode !== undefined) setTrackingMode(externalMode);
+  }, [externalTarget, externalMode]);
+
   const thresholdRef = useRef(0.45);
   const modelRef = useRef<cocoSsd.ObjectDetection | null>(null);
   const requestRef = useRef<number | null>(null);
@@ -134,29 +152,75 @@ export default function CameraModule() {
             };
           });
         
-        setDetections(formatted);
+        // --- PERSISTENCE & SMOOTHING LOGIC ---
+        const SMOOTHING = 0.35;
+        const GRACE_PERIOD = 3; // Number of frames to keep an object alive after it's lost
+        const prevSmoothed = smoothedDetectionsRef.current;
+        
+        // 1. Match current detections with previous ones
+        const nextSmoothed: Detection[] = [];
+        const unmatchedPrev = [...prevSmoothed];
+
+        formatted.forEach(current => {
+          const prevIndex = unmatchedPrev.findIndex(p => 
+            p.label === current.label && 
+            Math.abs(p.box[0] - current.box[0]) < 20 && 
+            Math.abs(p.box[1] - current.box[1]) < 20
+          );
+
+          if (prevIndex !== -1) {
+            const prev = unmatchedPrev[prevIndex];
+            unmatchedPrev.splice(prevIndex, 1);
+
+            // Blend coordinates and confidence
+            nextSmoothed.push({
+              label: current.label,
+              confidence: current.confidence * SMOOTHING + prev.confidence * (1 - SMOOTHING),
+              box: [
+                current.box[0] * SMOOTHING + prev.box[0] * (1 - SMOOTHING),
+                current.box[1] * SMOOTHING + prev.box[1] * (1 - SMOOTHING),
+                current.box[2] * SMOOTHING + prev.box[2] * (1 - SMOOTHING),
+                current.box[3] * SMOOTHING + prev.box[3] * (1 - SMOOTHING)
+              ],
+              life: GRACE_PERIOD
+            });
+          } else {
+            nextSmoothed.push({ ...current, life: GRACE_PERIOD });
+          }
+        });
+
+        // 2. Handle missing objects (Grace Period)
+        unmatchedPrev.forEach(prev => {
+          if (prev.life && prev.life > 0) {
+            nextSmoothed.push({
+              ...prev,
+              life: prev.life - 1,
+              confidence: prev.confidence * 0.9 // Slowly fade confidence
+            });
+          }
+        });
+
+        // 3. Final display filter (only show if smoothed confidence >= threshold or in grace period)
+        const toDisplay = nextSmoothed.filter(d => d.confidence >= thresholdRef.current * 0.8);
+        
+        smoothedDetectionsRef.current = nextSmoothed;
+        setDetections(toDisplay);
+        if (onDetectionUpdate) onDetectionUpdate(toDisplay);
 
         // Update Trails
         setTrails(prev => {
           const newTrails = { ...prev };
-          
-          // Clear trails for labels not in current detections
-          const currentLabels = new Set(formatted.map(d => d.label));
+          const currentLabels = new Set(toDisplay.map(d => d.label));
           Object.keys(newTrails).forEach(label => {
-            if (!currentLabels.has(label)) {
-              delete newTrails[label];
-            }
+            if (!currentLabels.has(label)) delete newTrails[label];
           });
 
-          formatted.forEach(det => {
+          toDisplay.forEach(det => {
             const centerX = det.box[0] + det.box[2] / 2;
             const centerY = det.box[1] + det.box[3] / 2;
             const history = newTrails[det.label] || [];
-            
-            // Limit trail history to 15 points
             newTrails[det.label] = [...history.slice(-14), [centerX, centerY]];
           });
-          
           return newTrails;
         });
       } catch (err) {
@@ -339,24 +403,36 @@ export default function CameraModule() {
                 ))}
               </svg>
 
-              {detections.map((det, idx) => (
-                <div 
-                  key={idx}
-                  className="absolute border-2 border-blue-500 bg-blue-500/10 rounded-lg"
+              {detections.map((det, idx) => {
+                const isTarget = targetLabel && det.label.toLowerCase().includes(targetLabel.toLowerCase());
 
-                  style={{
-                    left: `${det.box[0]}%`,
-                    top: `${det.box[1]}%`,
-                    width: `${det.box[2]}%`,
-                    height: `${det.box[3]}%`,
-                  }}
-                >
-                  <div className={`absolute -top-6 left-0 bg-blue-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 shadow-lg ${facingMode === 'user' ? '-scale-x-100' : ''}`}>
-                    <span>{det.label}</span>
-                    <span className="opacity-70">{(det.confidence * 100).toFixed(0)}%</span>
+                return (
+                  <div 
+                    key={idx}
+                    className={`absolute border-2 rounded-lg transition-colors duration-300 ${
+                      isTarget 
+                      ? 'border-red-500 bg-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.5)] z-30' 
+                      : 'border-blue-500 bg-blue-500/10 z-20'
+                    }`}
+                    style={{
+                      left: `${det.box[0]}%`,
+                      top: `${det.box[1]}%`,
+                      width: `${det.box[2]}%`,
+                      height: `${det.box[3]}%`,
+                    }}
+                  >
+                    <div className={`absolute -top-6 left-0 text-white text-[9px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 shadow-lg ${
+                      isTarget ? 'bg-red-500' : 'bg-blue-500'
+                    } ${facingMode === 'user' ? '-scale-x-100' : ''}`}>
+                      {isTarget && <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />}
+                      <span>{det.label}</span>
+                      <span className="opacity-70">{(det.confidence * 100).toFixed(0)}%</span>
+                      {isTarget && <span className="ml-1 text-[7px] border border-white/30 px-1 rounded">{trackingMode.toUpperCase()}</span>}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
+
             </div>
           </>
         ) : (
